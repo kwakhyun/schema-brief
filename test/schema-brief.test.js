@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brief, extractJson, parseStructured, repairPrompt, validate } from "../src/index.js";
+import {
+  brief,
+  createContract,
+  extractJson,
+  extractJsonValues,
+  parseStructured,
+  repairJsonText,
+  repairPrompt,
+  splitJson,
+  toAnthropicTool,
+  toOpenAIResponseFormat,
+  toOpenAITool,
+  validate
+} from "../src/index.js";
 
 const taskSchema = {
   title: "TaskSummary",
@@ -43,6 +56,38 @@ test("extractJson skips non-json fenced text before a JSON payload", () => {
   const text = "```text\nnot json\n```\nThen:\n```json\n{\"ok\":true}\n```";
 
   assert.deepEqual(extractJson(text), { ok: true });
+});
+
+test("extractJsonValues returns every JSON value in model text", () => {
+  const values = extractJsonValues("First {\"a\":1} second [true,false] done.");
+
+  assert.deepEqual(values, [{ a: 1 }, [true, false]]);
+});
+
+test("extractJsonValues preserves duplicate JSON payloads", () => {
+  const values = extractJsonValues("{\"a\":1}\n{\"a\":1}");
+
+  assert.deepEqual(values, [{ a: 1 }, { a: 1 }]);
+});
+
+test("extractJsonValues preserves order across fenced and inline JSON", () => {
+  const values = extractJsonValues("{\"a\":1}\n```json\n{\"b\":2}\n```\n{\"c\":3}");
+
+  assert.deepEqual(values, [{ a: 1 }, { b: 2 }, { c: 3 }]);
+});
+
+test("splitJson separates prose from JSON payloads", () => {
+  const result = splitJson("Before {\"a\":1} after [2,3] done");
+
+  assert.deepEqual(result.text, ["Before", "after", "done"]);
+  assert.deepEqual(result.json, [{ a: 1 }, [2, 3]]);
+});
+
+test("repairJsonText and extractJson handle common LLM JSON glitches", () => {
+  const repaired = repairJsonText("{\n// comment\n\"a\": 1,\n}");
+
+  assert.equal(repaired, "{\n\n\"a\": 1}");
+  assert.deepEqual(extractJson("{\n// comment\n\"a\": 1,\n}"), { a: 1 });
 });
 
 test("validate accepts matching objects", () => {
@@ -176,6 +221,23 @@ test("parseStructured extracts and validates model output", () => {
     priority: "medium",
     tags: ["code"]
   });
+});
+
+test("createContract bundles prompt, parse, validate, repair, and provider helpers", () => {
+  const contract = createContract(taskSchema);
+  const parsed = contract.parse("{\"title\":\"Review PR\",\"priority\":\"high\",\"tags\":[\"code\"]}");
+
+  assert.match(contract.prompt, /TaskSummary/);
+  assert.equal(parsed.ok, true);
+  assert.equal(contract.validate(parsed.value).ok, true);
+  assert.match(contract.repairPrompt([{ path: "$.priority", code: "enum", message: "Expected priority" }]), /priority/);
+  assert.equal(contract.toOpenAIResponseFormat().json_schema.name, "TaskSummary");
+});
+
+test("provider helpers produce OpenAI and Anthropic schema shapes", () => {
+  assert.deepEqual(toOpenAIResponseFormat(taskSchema).type, "json_schema");
+  assert.deepEqual(toOpenAITool(taskSchema).function.parameters, taskSchema);
+  assert.deepEqual(toAnthropicTool(taskSchema).input_schema, taskSchema);
 });
 
 test("repairPrompt includes schema and validation issues", () => {

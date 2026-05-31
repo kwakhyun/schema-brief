@@ -47,32 +47,97 @@ export function extractJson(text) {
     throw new TypeError("extractJson expected a string");
   }
 
-  const candidates = jsonCandidates(text);
-  let lastError;
-
-  for (const source of candidates) {
-    try {
-      return JSON.parse(source);
-    } catch (error) {
-      lastError = error;
-      const slice = firstJsonSlice(source);
-      if (!slice) {
-        continue;
-      }
-
-      try {
-        return JSON.parse(slice);
-      } catch (sliceError) {
-        lastError = sliceError;
-      }
-    }
-  }
-
-  if (lastError instanceof SyntaxError) {
-    throw lastError;
+  const values = extractJsonValues(text);
+  if (values.length > 0) {
+    return values[0];
   }
 
   throw new SyntaxError("No JSON object or array found in text");
+}
+
+/**
+ * Extract every complete JSON object or array from text.
+ *
+ * @param {string} text
+ * @returns {unknown[]}
+ */
+export function extractJsonValues(text) {
+  if (typeof text !== "string") {
+    throw new TypeError("extractJsonValues expected a string");
+  }
+
+  const matches = [];
+  const fences = [...text.matchAll(/```[a-zA-Z0-9_-]*\s*([\s\S]*?)```/g)];
+
+  for (const match of fences) {
+    const values = parseJsonValues(match[1].trim());
+    if (values.length > 0) {
+      matches.push({ start: match.index, values });
+    }
+  }
+
+  const outside = maskRanges(text, fences.map((match) => [match.index, match.index + match[0].length]));
+  for (const match of jsonMatches(outside)) {
+    matches.push({ start: match.start, values: [match.value] });
+  }
+
+  return matches
+    .sort((a, b) => a.start - b.start)
+    .flatMap((match) => match.values);
+}
+
+/**
+ * Separate parsed JSON payloads from surrounding text.
+ *
+ * @param {string} text
+ * @returns {import("./index.d.ts").SplitJsonResult}
+ */
+export function splitJson(text) {
+  if (typeof text !== "string") {
+    throw new TypeError("splitJson expected a string");
+  }
+
+  const parts = [];
+  const json = [];
+  const matches = jsonMatches(text);
+  let cursor = 0;
+
+  for (const match of matches) {
+    const before = text.slice(cursor, match.start).trim();
+    if (before) {
+      parts.push(before);
+    }
+    json.push(match.value);
+    cursor = match.end;
+  }
+
+  const after = text.slice(cursor).trim();
+  if (after) {
+    parts.push(after);
+  }
+
+  return { text: parts, json };
+}
+
+/**
+ * Repair common LLM JSON formatting mistakes without evaluating code.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function repairJsonText(text) {
+  if (typeof text !== "string") {
+    throw new TypeError("repairJsonText expected a string");
+  }
+
+  const normalized = text
+    .replace(/^\uFEFF/, "")
+    .replace(/[\u201C\u201D]/g, "\"")
+    .replace(/[\u2018\u2019]/g, "'");
+
+  return stripJsonComments(normalized)
+    .trim()
+    .replace(/,\s*([}\]])/g, "$1");
 }
 
 /**
@@ -115,6 +180,28 @@ export function parseStructured(text, schema) {
 }
 
 /**
+ * Create a reusable structured-output contract around one schema.
+ *
+ * @param {import("./index.d.ts").JsonSchema} schema
+ * @param {import("./index.d.ts").BriefOptions} [options]
+ * @returns {import("./index.d.ts").OutputContract}
+ */
+export function createContract(schema, options = {}) {
+  const prompt = brief(schema, options);
+  return {
+    schema,
+    prompt,
+    instructions: prompt,
+    parse: (text) => parseStructured(text, schema),
+    validate: (value) => validate(schema, value),
+    repairPrompt: (issues) => repairPrompt(schema, issues),
+    toOpenAIResponseFormat: (providerOptions = {}) => toOpenAIResponseFormat(schema, providerOptions),
+    toOpenAITool: (providerOptions = {}) => toOpenAITool(schema, providerOptions),
+    toAnthropicTool: (providerOptions = {}) => toAnthropicTool(schema, providerOptions)
+  };
+}
+
+/**
  * Create a concise repair prompt from validation issues.
  *
  * @param {import("./index.d.ts").JsonSchema} schema
@@ -130,6 +217,64 @@ export function repairPrompt(schema, issues) {
     "Validation errors:",
     bulletList
   ].join("\n");
+}
+
+/**
+ * Convert a JSON Schema into OpenAI's json_schema response_format shape.
+ *
+ * @param {import("./index.d.ts").JsonSchema} schema
+ * @param {import("./index.d.ts").ProviderFormatOptions} [options]
+ * @returns {import("./index.d.ts").OpenAIResponseFormat}
+ */
+export function toOpenAIResponseFormat(schema, options = {}) {
+  const jsonSchema = {
+    name: schemaName(schema, options.name),
+    strict: options.strict !== false,
+    schema
+  };
+
+  if (typeof options.description === "string" && options.description.trim()) {
+    jsonSchema.description = options.description.trim();
+  }
+
+  return {
+    type: "json_schema",
+    json_schema: jsonSchema
+  };
+}
+
+/**
+ * Convert a JSON Schema into an OpenAI tool/function definition.
+ *
+ * @param {import("./index.d.ts").JsonSchema} schema
+ * @param {import("./index.d.ts").ProviderFormatOptions} [options]
+ * @returns {import("./index.d.ts").OpenAITool}
+ */
+export function toOpenAITool(schema, options = {}) {
+  return {
+    type: "function",
+    function: {
+      name: schemaName(schema, options.name),
+      description: providerDescription(schema, options),
+      parameters: schema,
+      strict: options.strict !== false
+    }
+  };
+}
+
+/**
+ * Convert a JSON Schema into an Anthropic tool definition.
+ *
+ * @param {import("./index.d.ts").JsonSchema} schema
+ * @param {import("./index.d.ts").ProviderFormatOptions} [options]
+ * @returns {import("./index.d.ts").AnthropicTool}
+ */
+export function toAnthropicTool(schema, options = {}) {
+  return {
+    name: schemaName(schema, options.name),
+    description: providerDescription(schema, options),
+    input_schema: schema
+  };
 }
 
 function describeSchema(schema, context) {
@@ -479,16 +624,70 @@ function stableStringify(value) {
   return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`).join(",")}}`;
 }
 
-function jsonCandidates(text) {
-  const candidates = [];
-  const jsonFences = [...text.matchAll(/```json\s*([\s\S]*?)```/gi)].map((match) => match[1].trim());
-  const allFences = [...text.matchAll(/```[a-zA-Z0-9_-]*\s*([\s\S]*?)```/g)].map((match) => match[1].trim());
+function parseJsonValues(source) {
+  try {
+    return [parseJsonText(source)];
+  } catch {
+    return jsonSlices(source)
+      .map((slice) => {
+        try {
+          return parseJsonText(slice.value);
+        } catch {
+          return undefined;
+        }
+      })
+      .filter((value) => value !== undefined);
+  }
+}
 
-  candidates.push(...jsonFences);
-  candidates.push(...allFences.filter((candidate) => !jsonFences.includes(candidate)));
-  candidates.push(text.trim());
+function maskRanges(source, ranges) {
+  if (ranges.length === 0) {
+    return source;
+  }
 
-  return candidates.filter(Boolean);
+  const chars = [...source];
+  for (const [start, end] of ranges) {
+    for (let index = start; index < end; index += 1) {
+      chars[index] = " ";
+    }
+  }
+  return chars.join("");
+}
+
+function parseJsonText(source) {
+  try {
+    return JSON.parse(source);
+  } catch {
+    return JSON.parse(repairJsonText(source));
+  }
+}
+
+function jsonMatches(source) {
+  return jsonSlices(source)
+    .map((slice) => {
+      try {
+        return {
+          start: slice.start,
+          end: slice.end,
+          value: parseJsonText(slice.value)
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function jsonSlices(source) {
+  const slices = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const slice = firstJsonSlice(source, index);
+    if (slice) {
+      slices.push(slice);
+      index = slice.end - 1;
+    }
+  }
+  return slices;
 }
 
 function safeRegExp(pattern, path, issues) {
@@ -501,8 +700,79 @@ function safeRegExp(pattern, path, issues) {
   }
 }
 
-function firstJsonSlice(source) {
-  for (let index = 0; index < source.length; index += 1) {
+function schemaName(schema, name) {
+  const candidate = typeof name === "string" && name.trim() ? name : schema.title;
+  const fallback = "structured_output";
+  return (candidate ?? fallback)
+    .toString()
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64) || fallback;
+}
+
+function providerDescription(schema, options) {
+  if (typeof options.description === "string" && options.description.trim()) {
+    return options.description.trim();
+  }
+  if (typeof schema.description === "string" && schema.description.trim()) {
+    return schema.description.trim();
+  }
+  return `Return ${schemaName(schema, options.name)} as JSON.`;
+}
+
+function stripJsonComments(text) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      output += char;
+      escaped = inString;
+      continue;
+    }
+
+    if (char === "\"") {
+      output += char;
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString && char === "/" && next === "/") {
+      while (index < text.length && text[index] !== "\n") {
+        index += 1;
+      }
+      output += "\n";
+      continue;
+    }
+
+    if (!inString && char === "/" && next === "*") {
+      index += 2;
+      while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) {
+        index += 1;
+      }
+      index += 1;
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
+}
+
+function firstJsonSlice(source, fromIndex = 0) {
+  for (let index = fromIndex; index < source.length; index += 1) {
     const char = source[index];
     if (char !== "{" && char !== "[") continue;
 
@@ -536,11 +806,15 @@ function firstJsonSlice(source) {
       } else if (current === "}" || current === "]") {
         if (current !== stack.pop()) break;
         if (stack.length === 0) {
-          return source.slice(index, cursor + 1);
+          return {
+            start: index,
+            end: cursor + 1,
+            value: source.slice(index, cursor + 1)
+          };
         }
       }
     }
   }
 
-  return "";
+  return null;
 }

@@ -46,6 +46,17 @@ export interface BriefOptions {
   maxDepth?: number;
 }
 
+export interface SplitJsonResult {
+  text: string[];
+  json: unknown[];
+}
+
+export interface ProviderFormatOptions {
+  name?: string;
+  description?: string;
+  strict?: boolean;
+}
+
 export interface ValidationIssue {
   path: string;
   code: string;
@@ -58,8 +69,53 @@ export type ValidationResult<T = unknown> =
 
 export type ParseResult<T = unknown> = ValidationResult<T>;
 
+export interface OpenAIResponseFormat {
+  type: "json_schema";
+  json_schema: {
+    name: string;
+    strict: boolean;
+    schema: JsonSchema;
+    description?: string;
+  };
+}
+
+export interface OpenAITool {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: JsonSchema;
+    strict: boolean;
+  };
+}
+
+export interface AnthropicTool {
+  name: string;
+  description: string;
+  input_schema: JsonSchema;
+}
+
+export interface OutputContract<T = unknown> {
+  schema: JsonSchema;
+  prompt: string;
+  instructions: string;
+  parse(text: string): ParseResult<T>;
+  validate(value: unknown): ValidationResult<T>;
+  repairPrompt(issues: readonly ValidationIssue[]): string;
+  toOpenAIResponseFormat(options?: ProviderFormatOptions): OpenAIResponseFormat;
+  toOpenAITool(options?: ProviderFormatOptions): OpenAITool;
+  toAnthropicTool(options?: ProviderFormatOptions): AnthropicTool;
+}
+
 export function brief(schema: JsonSchema, options?: BriefOptions): string;
 export function extractJson(text: string): unknown;
+export function extractJsonValues(text: string): unknown[];
+export function splitJson(text: string): SplitJsonResult;
+export function repairJsonText(text: string): string;
 export function validate<T = unknown>(schema: JsonSchema, value: unknown): ValidationResult<T>;
 export function parseStructured<T = unknown>(text: string, schema: JsonSchema): ParseResult<T>;
+export function createContract<T = unknown>(schema: JsonSchema, options?: BriefOptions): OutputContract<T>;
 export function repairPrompt(schema: JsonSchema, issues: readonly ValidationIssue[]): string;
+export function toOpenAIResponseFormat(schema: JsonSchema, options?: ProviderFormatOptions): OpenAIResponseFormat;
+export function toOpenAITool(schema: JsonSchema, options?: ProviderFormatOptions): OpenAITool;
+export function toAnthropicTool(schema: JsonSchema, options?: ProviderFormatOptions): AnthropicTool;
