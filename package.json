@@ -1,0 +1,51 @@
+{
+  "name": "schema-brief",
+  "version": "0.1.0",
+  "description": "Compact JSON Schema prompts and validate structured LLM outputs with zero dependencies.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/index.js",
+    "prepublishOnly": "npm test && npm run check"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "json-schema",
+    "structured-output",
+    "typescript",
+    "validation",
+    "prompt"
+  ],
+  "author": "",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kwakhyun/schema-brief.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kwakhyun/schema-brief/issues"
+  },
+  "homepage": "https://github.com/kwakhyun/schema-brief#readme"
+}
