@@ -47,18 +47,32 @@ export function extractJson(text) {
     throw new TypeError("extractJson expected a string");
   }
 
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const source = fenced ? fenced[1].trim() : text.trim();
+  const candidates = jsonCandidates(text);
+  let lastError;
 
-  try {
-    return JSON.parse(source);
-  } catch {
-    const slice = firstJsonSlice(source);
-    if (!slice) {
-      throw new SyntaxError("No JSON object or array found in text");
+  for (const source of candidates) {
+    try {
+      return JSON.parse(source);
+    } catch (error) {
+      lastError = error;
+      const slice = firstJsonSlice(source);
+      if (!slice) {
+        continue;
+      }
+
+      try {
+        return JSON.parse(slice);
+      } catch (sliceError) {
+        lastError = sliceError;
+      }
     }
-    return JSON.parse(slice);
   }
+
+  if (lastError instanceof SyntaxError) {
+    throw lastError;
+  }
+
+  throw new SyntaxError("No JSON object or array found in text");
 }
 
 /**
@@ -131,6 +145,18 @@ function describeSchema(schema, context) {
     return schema.enum.map((item) => JSON.stringify(item)).join(" | ");
   }
 
+  if (Array.isArray(schema.oneOf)) {
+    return schema.oneOf.map((child) => describeSchema(child, nextContext(context))).join(" | ");
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    return schema.anyOf.map((child) => describeSchema(child, nextContext(context))).join(" | ");
+  }
+
+  if (Array.isArray(schema.allOf)) {
+    return schema.allOf.map((child) => describeSchema(child, nextContext(context))).join(" & ");
+  }
+
   const type = normalizeType(schema);
 
   if (Array.isArray(type)) {
@@ -154,7 +180,9 @@ function describeSchema(schema, context) {
   }
 
   if (type === "array" || schema.items) {
-    const item = schema.items && !Array.isArray(schema.items)
+    const item = Array.isArray(schema.items)
+      ? `[${schema.items.map((child) => describeSchema(child, nextContext(context))).join(", ")}]`
+      : schema.items
       ? describeSchema(schema.items, nextContext(context))
       : "unknown";
     const range = formatRange(schema.minItems, schema.maxItems, "items");
@@ -190,6 +218,10 @@ function collectDescriptions(schema, path = "$", notes = []) {
 
   if (schema.items && !Array.isArray(schema.items)) {
     collectDescriptions(schema.items, `${path}[]`, notes);
+  } else if (Array.isArray(schema.items)) {
+    schema.items.forEach((child, index) => {
+      collectDescriptions(child, `${path}[${index}]`, notes);
+    });
   }
 
   if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
@@ -212,6 +244,10 @@ function visit(schema, value, path, issues, depth) {
 
   if (Array.isArray(schema.enum) && !schema.enum.some((item) => sameJson(item, value))) {
     issues.push(issue(path, "enum", `Expected one of ${schema.enum.map(stableStringify).join(", ")}`));
+    return;
+  }
+
+  if (!validateCompositions(schema, value, path, issues, depth)) {
     return;
   }
 
@@ -243,6 +279,15 @@ function visit(schema, value, path, issues, depth) {
 function validateObject(schema, value, path, issues, depth) {
   const props = schema.properties ?? {};
   const required = Array.isArray(schema.required) ? schema.required : [];
+  const keys = Object.keys(value);
+
+  if (typeof schema.minProperties === "number" && keys.length < schema.minProperties) {
+    issues.push(issue(path, "min_properties", `Expected at least ${schema.minProperties} properties`));
+  }
+
+  if (typeof schema.maxProperties === "number" && keys.length > schema.maxProperties) {
+    issues.push(issue(path, "max_properties", `Expected at most ${schema.maxProperties} properties`));
+  }
 
   for (const key of required) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) {
@@ -273,7 +318,25 @@ function validateArray(schema, value, path, issues, depth) {
     issues.push(issue(path, "max_items", `Expected at most ${schema.maxItems} items`));
   }
 
-  if (schema.items && !Array.isArray(schema.items)) {
+  if (schema.uniqueItems === true) {
+    const seen = new Set();
+    for (const itemValue of value) {
+      const key = stableStringify(itemValue);
+      if (seen.has(key)) {
+        issues.push(issue(path, "unique_items", "Expected array items to be unique"));
+        break;
+      }
+      seen.add(key);
+    }
+  }
+
+  if (Array.isArray(schema.items)) {
+    schema.items.forEach((itemSchema, index) => {
+      if (index < value.length) {
+        visit(itemSchema, value[index], `${path}[${index}]`, issues, depth + 1);
+      }
+    });
+  } else if (schema.items) {
     value.forEach((itemValue, index) => {
       visit(schema.items, itemValue, `${path}[${index}]`, issues, depth + 1);
     });
@@ -290,7 +353,8 @@ function validateString(schema, value, path, issues) {
   }
 
   if (typeof schema.pattern === "string") {
-    const pattern = new RegExp(schema.pattern);
+    const pattern = safeRegExp(schema.pattern, path, issues);
+    if (!pattern) return;
     if (!pattern.test(value)) {
       issues.push(issue(path, "pattern", `Expected string to match /${schema.pattern}/`));
     }
@@ -313,6 +377,47 @@ function validateNumber(schema, value, path, issues) {
   if (typeof schema.maximum === "number" && value > schema.maximum) {
     issues.push(issue(path, "maximum", `Expected value <= ${schema.maximum}`));
   }
+
+  if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) {
+    issues.push(issue(path, "exclusive_minimum", `Expected value > ${schema.exclusiveMinimum}`));
+  }
+
+  if (typeof schema.exclusiveMaximum === "number" && value >= schema.exclusiveMaximum) {
+    issues.push(issue(path, "exclusive_maximum", `Expected value < ${schema.exclusiveMaximum}`));
+  }
+
+  if (typeof schema.multipleOf === "number" && schema.multipleOf > 0) {
+    const quotient = value / schema.multipleOf;
+    if (Math.abs(quotient - Math.round(quotient)) > Number.EPSILON * 100) {
+      issues.push(issue(path, "multiple_of", `Expected a multiple of ${schema.multipleOf}`));
+    }
+  }
+}
+
+function validateCompositions(schema, value, path, issues, depth) {
+  if (Array.isArray(schema.allOf)) {
+    for (const child of schema.allOf) {
+      visit(child, value, path, issues, depth + 1);
+    }
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    const matches = schema.anyOf.filter((child) => validate(child, value).ok);
+    if (matches.length === 0) {
+      issues.push(issue(path, "any_of", "Expected value to match at least one schema"));
+      return false;
+    }
+  }
+
+  if (Array.isArray(schema.oneOf)) {
+    const matches = schema.oneOf.filter((child) => validate(child, value).ok);
+    if (matches.length !== 1) {
+      issues.push(issue(path, "one_of", `Expected value to match exactly one schema, matched ${matches.length}`));
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function normalizeType(schema) {
@@ -372,6 +477,28 @@ function stableStringify(value) {
 
   const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
   return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`).join(",")}}`;
+}
+
+function jsonCandidates(text) {
+  const candidates = [];
+  const jsonFences = [...text.matchAll(/```json\s*([\s\S]*?)```/gi)].map((match) => match[1].trim());
+  const allFences = [...text.matchAll(/```[a-zA-Z0-9_-]*\s*([\s\S]*?)```/g)].map((match) => match[1].trim());
+
+  candidates.push(...jsonFences);
+  candidates.push(...allFences.filter((candidate) => !jsonFences.includes(candidate)));
+  candidates.push(text.trim());
+
+  return candidates.filter(Boolean);
+}
+
+function safeRegExp(pattern, path, issues) {
+  try {
+    return new RegExp(pattern);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Invalid regular expression";
+    issues.push(issue(path, "invalid_pattern", detail));
+    return null;
+  }
 }
 
 function firstJsonSlice(source) {

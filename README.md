@@ -117,14 +117,23 @@ Creates a concise prompt asking a model to repair invalid JSON.
 - `required`
 - `additionalProperties`
 - `items`
+- `allOf`
+- `anyOf`
+- `oneOf`
 - `minItems`
 - `maxItems`
+- `uniqueItems`
+- `minProperties`
+- `maxProperties`
 - `minLength`
 - `maxLength`
 - `pattern`
 - `format` for prompt output only
 - `minimum`
 - `maximum`
+- `exclusiveMinimum`
+- `exclusiveMaximum`
+- `multipleOf`
 
 ## Product Roadmap
 

@@ -1,6 +1,6 @@
 {
   "name": "schema-brief",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Compact JSON Schema prompts and validate structured LLM outputs with zero dependencies.",
   "type": "module",
   "main": "./src/index.js",
@@ -14,6 +14,7 @@
   "files": [
     "src",
     "examples",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],

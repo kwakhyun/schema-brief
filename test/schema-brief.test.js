@@ -39,6 +39,12 @@ test("extractJson handles markdown fences and surrounding prose", () => {
   assert.deepEqual(extractJson("Here is the payload: {\"ok\":[1,2,3]} thanks"), { ok: [1, 2, 3] });
 });
 
+test("extractJson skips non-json fenced text before a JSON payload", () => {
+  const text = "```text\nnot json\n```\nThen:\n```json\n{\"ok\":true}\n```";
+
+  assert.deepEqual(extractJson(text), { ok: true });
+});
+
 test("validate accepts matching objects", () => {
   const result = validate(taskSchema, {
     title: "Ship API",
@@ -68,6 +74,94 @@ test("validate reports required, enum, length, and extra property errors", () =>
     result.issues.map((item) => item.code).sort(),
     ["additional_property", "enum", "min_items", "min_length"]
   );
+});
+
+test("validate reports invalid regex patterns instead of throwing", () => {
+  const result = validate({ type: "string", pattern: "[" }, "abc");
+
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].code, "invalid_pattern");
+});
+
+test("validate supports tuple items and uniqueItems", () => {
+  const schema = {
+    type: "array",
+    uniqueItems: true,
+    items: [{ type: "string" }, { type: "integer" }]
+  };
+
+  assert.equal(validate(schema, ["ok", 1]).ok, true);
+
+  const result = validate(schema, ["ok", "nope", "ok"]);
+  assert.equal(result.ok, false);
+  assert.deepEqual(
+    result.issues.map((item) => item.code).sort(),
+    ["type", "unique_items"]
+  );
+});
+
+test("validate supports object, number, and composition constraints", () => {
+  const result = validate(
+    {
+      allOf: [
+        {
+          type: "object",
+          minProperties: 2,
+          maxProperties: 2,
+          required: ["count"],
+          properties: {
+            count: {
+              type: "integer",
+              exclusiveMinimum: 0,
+              maximum: 10,
+              multipleOf: 2
+            }
+          }
+        },
+        {
+          type: "object",
+          properties: {
+            status: { anyOf: [{ const: "ready" }, { const: "queued" }] }
+          }
+        }
+      ]
+    },
+    { count: 4, status: "ready" }
+  );
+
+  assert.equal(result.ok, true);
+});
+
+test("validate reports object and number constraint failures", () => {
+  const result = validate(
+    {
+      type: "object",
+      minProperties: 2,
+      maxProperties: 2,
+      properties: {
+        count: {
+          type: "number",
+          exclusiveMinimum: 0,
+          exclusiveMaximum: 10,
+          multipleOf: 2
+        }
+      }
+    },
+    { count: 11, extra: true, third: true }
+  );
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(
+    result.issues.map((item) => item.code).sort(),
+    ["exclusive_maximum", "max_properties", "multiple_of"]
+  );
+});
+
+test("validate reports oneOf mismatches", () => {
+  const result = validate({ oneOf: [{ type: "string" }, { type: "integer" }] }, true);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].code, "one_of");
 });
 
 test("parseStructured extracts and validates model output", () => {

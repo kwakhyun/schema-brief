@@ -20,14 +20,23 @@ export interface JsonSchema {
   required?: readonly string[];
   additionalProperties?: boolean | JsonSchema;
   items?: JsonSchema | readonly JsonSchema[];
+  allOf?: readonly JsonSchema[];
+  anyOf?: readonly JsonSchema[];
+  oneOf?: readonly JsonSchema[];
   minItems?: number;
   maxItems?: number;
+  uniqueItems?: boolean;
+  minProperties?: number;
+  maxProperties?: number;
   minLength?: number;
   maxLength?: number;
   pattern?: string;
   format?: string;
   minimum?: number;
   maximum?: number;
+  exclusiveMinimum?: number;
+  exclusiveMaximum?: number;
+  multipleOf?: number;
 }
 
 export interface BriefOptions {
