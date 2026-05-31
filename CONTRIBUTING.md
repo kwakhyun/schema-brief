@@ -11,6 +11,12 @@ npm run check
 
 The package intentionally has no runtime dependencies. Please avoid adding dependencies unless they unlock a core use case that cannot be implemented clearly in a small amount of code.
 
+## Releases
+
+Releases are published through GitHub Actions Trusted Publishing. Bump `package.json`, commit the change, push it to `main`, then publish a GitHub Release for the same version tag such as `v0.2.0`.
+
+The release workflow is `.github/workflows/release.yml` and does not use an `NPM_TOKEN`. npm exchanges the GitHub Actions OIDC identity for a short-lived publish credential.
+
 ## Scope
 
 Good first contributions:
