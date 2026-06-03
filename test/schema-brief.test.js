@@ -44,7 +44,38 @@ test("brief compiles JSON Schema into concise prompt text", () => {
   assert.match(text, /Return JSON for TaskSummary/);
   assert.match(text, /title: string/);
   assert.match(text, /priority: "low" \| "medium" \| "high"/);
+  assert.match(text, /no extra properties/);
   assert.match(text, /\$\.title: Short human-readable task title/);
+});
+
+test("brief includes supported validation constraints in prompt text", () => {
+  const text = brief({
+    type: "object",
+    minProperties: 1,
+    maxProperties: 2,
+    additionalProperties: false,
+    properties: {
+      score: {
+        type: "number",
+        exclusiveMinimum: 0,
+        exclusiveMaximum: 10,
+        multipleOf: 0.5
+      },
+      tags: {
+        type: "array",
+        uniqueItems: true,
+        minItems: 1,
+        items: { type: "string" }
+      }
+    }
+  });
+
+  assert.match(text, /1-2 properties/);
+  assert.match(text, /no extra properties/);
+  assert.match(text, />0/);
+  assert.match(text, /<10/);
+  assert.match(text, /multiple of 0.5/);
+  assert.match(text, /unique items/);
 });
 
 test("extractJson handles markdown fences and surrounding prose", () => {
@@ -83,11 +114,25 @@ test("splitJson separates prose from JSON payloads", () => {
   assert.deepEqual(result.json, [{ a: 1 }, [2, 3]]);
 });
 
+test("splitJson removes markdown fence wrappers from surrounding text", () => {
+  const result = splitJson("Before ```json\n{\"a\":1}\n``` after");
+
+  assert.deepEqual(result.text, ["Before", "after"]);
+  assert.deepEqual(result.json, [{ a: 1 }]);
+});
+
 test("repairJsonText and extractJson handle common LLM JSON glitches", () => {
   const repaired = repairJsonText("{\n// comment\n\"a\": 1,\n}");
 
-  assert.equal(repaired, "{\n\n\"a\": 1}");
+  assert.equal(repaired, "{\n\n\"a\": 1\n}");
   assert.deepEqual(extractJson("{\n// comment\n\"a\": 1,\n}"), { a: 1 });
+});
+
+test("repairJsonText preserves comma-brace text inside strings", () => {
+  const repaired = repairJsonText("{\"text\":\",}\",}");
+
+  assert.equal(repaired, "{\"text\":\",}\"}");
+  assert.deepEqual(extractJson("{\"text\":\",}\",}"), { text: ",}" });
 });
 
 test("validate accepts matching objects", () => {

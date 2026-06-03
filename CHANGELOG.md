@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Preserve comma-brace and comma-bracket text inside JSON strings when repairing trailing commas.
+- Make `splitJson` remove markdown fence wrappers consistently with JSON extraction helpers.
+- Include more supported validation constraints in `brief` prompt output.
+- Add push and pull request CI across Node.js 18, 20, 22, and 24.
+- Add package author metadata.
+
 ## 0.2.0
 
 - Add `extractJsonValues` for extracting multiple JSON payloads from one model response.

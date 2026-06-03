@@ -1,6 +1,6 @@
 {
   "name": "schema-brief",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Compact JSON Schema prompts and validate structured LLM outputs with zero dependencies.",
   "type": "module",
   "main": "./src/index.js",
@@ -32,7 +32,7 @@
     "validation",
     "prompt"
   ],
-  "author": "",
+  "author": "kwakhyun",
   "license": "MIT",
   "sideEffects": false,
   "engines": {

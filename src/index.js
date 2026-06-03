@@ -66,24 +66,7 @@ export function extractJsonValues(text) {
     throw new TypeError("extractJsonValues expected a string");
   }
 
-  const matches = [];
-  const fences = [...text.matchAll(/```[a-zA-Z0-9_-]*\s*([\s\S]*?)```/g)];
-
-  for (const match of fences) {
-    const values = parseJsonValues(match[1].trim());
-    if (values.length > 0) {
-      matches.push({ start: match.index, values });
-    }
-  }
-
-  const outside = maskRanges(text, fences.map((match) => [match.index, match.index + match[0].length]));
-  for (const match of jsonMatches(outside)) {
-    matches.push({ start: match.start, values: [match.value] });
-  }
-
-  return matches
-    .sort((a, b) => a.start - b.start)
-    .flatMap((match) => match.values);
+  return jsonSegments(text).flatMap((segment) => segment.values);
 }
 
 /**
@@ -99,7 +82,7 @@ export function splitJson(text) {
 
   const parts = [];
   const json = [];
-  const matches = jsonMatches(text);
+  const matches = jsonSegments(text);
   let cursor = 0;
 
   for (const match of matches) {
@@ -107,7 +90,7 @@ export function splitJson(text) {
     if (before) {
       parts.push(before);
     }
-    json.push(match.value);
+    json.push(...match.values);
     cursor = match.end;
   }
 
@@ -135,9 +118,7 @@ export function repairJsonText(text) {
     .replace(/[\u201C\u201D]/g, "\"")
     .replace(/[\u2018\u2019]/g, "'");
 
-  return stripJsonComments(normalized)
-    .trim()
-    .replace(/,\s*([}\]])/g, "$1");
+  return removeTrailingJsonCommas(stripJsonComments(normalized).trim());
 }
 
 /**
@@ -321,7 +302,12 @@ function describeSchema(schema, context) {
       props.push("[key: string]: unknown");
     }
 
-    return `{ ${props.join("; ")} }`;
+    const constraints = [];
+    const propertyRange = formatRange(schema.minProperties, schema.maxProperties, "properties");
+    if (propertyRange) constraints.push(propertyRange.trim());
+    if (schema.additionalProperties === false) constraints.push("no extra properties");
+
+    return `{ ${props.join("; ")} }${formatConstraints(constraints)}`;
   }
 
   if (type === "array" || schema.items) {
@@ -331,7 +317,10 @@ function describeSchema(schema, context) {
       ? describeSchema(schema.items, nextContext(context))
       : "unknown";
     const range = formatRange(schema.minItems, schema.maxItems, "items");
-    return `Array<${item}>${range}`;
+    const constraints = [];
+    if (range) constraints.push(range.trim());
+    if (schema.uniqueItems === true) constraints.push("unique items");
+    return `Array<${item}>${formatConstraints(constraints)}`;
   }
 
   if (type === "string") {
@@ -343,8 +332,7 @@ function describeSchema(schema, context) {
   }
 
   if (type === "number" || type === "integer") {
-    const range = formatRange(schema.minimum, schema.maximum, "");
-    return `${type}${range}`;
+    return `${type}${formatNumberConstraints(schema)}`;
   }
 
   return type ?? "unknown";
@@ -607,6 +595,22 @@ function formatRange(min, max, unit) {
   return "";
 }
 
+function formatConstraints(constraints) {
+  return constraints.length > 0 ? ` (${constraints.join(", ")})` : "";
+}
+
+function formatNumberConstraints(schema) {
+  const constraints = [];
+  if (typeof schema.minimum === "number") constraints.push(`>=${schema.minimum}`);
+  if (typeof schema.maximum === "number") constraints.push(`<=${schema.maximum}`);
+  if (typeof schema.exclusiveMinimum === "number") constraints.push(`>${schema.exclusiveMinimum}`);
+  if (typeof schema.exclusiveMaximum === "number") constraints.push(`<${schema.exclusiveMaximum}`);
+  if (typeof schema.multipleOf === "number" && schema.multipleOf > 0) {
+    constraints.push(`multiple of ${schema.multipleOf}`);
+  }
+  return formatConstraints(constraints);
+}
+
 function sameJson(a, b) {
   return stableStringify(a) === stableStringify(b);
 }
@@ -640,12 +644,39 @@ function parseJsonValues(source) {
   }
 }
 
+function jsonSegments(source) {
+  const segments = [];
+  const fences = [...source.matchAll(/```[a-zA-Z0-9_-]*\s*([\s\S]*?)```/g)];
+
+  for (const match of fences) {
+    const values = parseJsonValues(match[1].trim());
+    if (values.length > 0) {
+      segments.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        values
+      });
+    }
+  }
+
+  const outside = maskRanges(source, fences.map((match) => [match.index, match.index + match[0].length]));
+  for (const match of jsonMatches(outside)) {
+    segments.push({
+      start: match.start,
+      end: match.end,
+      values: [match.value]
+    });
+  }
+
+  return segments.sort((a, b) => a.start - b.start);
+}
+
 function maskRanges(source, ranges) {
   if (ranges.length === 0) {
     return source;
   }
 
-  const chars = [...source];
+  const chars = source.split("");
   for (const [start, end] of ranges) {
     for (let index = start; index < end; index += 1) {
       chars[index] = " ";
@@ -763,6 +794,48 @@ function stripJsonComments(text) {
       }
       index += 1;
       continue;
+    }
+
+    output += char;
+  }
+
+  return output;
+}
+
+function removeTrailingJsonCommas(text) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      output += char;
+      escaped = inString;
+      continue;
+    }
+
+    if (char === "\"") {
+      output += char;
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString && char === ",") {
+      let cursor = index + 1;
+      while (cursor < text.length && /\s/.test(text[cursor])) {
+        cursor += 1;
+      }
+      if (text[cursor] === "}" || text[cursor] === "]") {
+        continue;
+      }
     }
 
     output += char;
