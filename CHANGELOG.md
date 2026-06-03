@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Add zero-dependency Zod adapter helpers using Zod's official `z.toJSONSchema` converter.
+- Add zero-dependency Valibot adapter helpers using `@valibot/to-json-schema`.
+- Add optional lightweight `format` validation for email, URL/URI, UUID, date, time, and date-time.
+- Add `parseManyStructured` and contract-level `parseMany` for validating multiple extracted JSON payloads.
+- Add browser size budget checks to local scripts, CI, and release validation.
+- Expand README provider examples and supported/unsupported JSON Schema documentation.
+
 ## 0.2.1
 
 - Preserve comma-brace and comma-bracket text inside JSON strings when repairing trailing commas.

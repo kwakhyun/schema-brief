@@ -46,6 +46,28 @@ export interface BriefOptions {
   maxDepth?: number;
 }
 
+export type FormatValidator = (value: string) => boolean;
+
+export interface ValidationOptions {
+  formats?: boolean | readonly string[] | Record<string, FormatValidator>;
+}
+
+export interface ContractOptions extends BriefOptions {
+  validation?: ValidationOptions;
+}
+
+export type SchemaConverter = (schema: unknown, options?: unknown) => unknown;
+
+export interface ZodAdapterOptions extends ContractOptions {
+  toJSONSchema: SchemaConverter;
+  converterOptions?: unknown;
+}
+
+export interface ValibotAdapterOptions extends ContractOptions {
+  toJsonSchema: SchemaConverter;
+  converterOptions?: unknown;
+}
+
 export interface SplitJsonResult {
   text: string[];
   json: unknown[];
@@ -68,6 +90,10 @@ export type ValidationResult<T = unknown> =
   | { ok: false; issues: ValidationIssue[] };
 
 export type ParseResult<T = unknown> = ValidationResult<T>;
+
+export type ParseManyResult<T = unknown> =
+  | { ok: true; values: T[]; results: Array<{ ok: true; value: T }> }
+  | { ok: false; issues: ValidationIssue[]; results: ParseResult<T>[] };
 
 export interface OpenAIResponseFormat {
   type: "json_schema";
@@ -99,8 +125,9 @@ export interface OutputContract<T = unknown> {
   schema: JsonSchema;
   prompt: string;
   instructions: string;
-  parse(text: string): ParseResult<T>;
-  validate(value: unknown): ValidationResult<T>;
+  parse(text: string, options?: ValidationOptions): ParseResult<T>;
+  parseMany(text: string, options?: ValidationOptions): ParseManyResult<T>;
+  validate(value: unknown, options?: ValidationOptions): ValidationResult<T>;
   repairPrompt(issues: readonly ValidationIssue[]): string;
   toOpenAIResponseFormat(options?: ProviderFormatOptions): OpenAIResponseFormat;
   toOpenAITool(options?: ProviderFormatOptions): OpenAITool;
@@ -112,9 +139,28 @@ export function extractJson(text: string): unknown;
 export function extractJsonValues(text: string): unknown[];
 export function splitJson(text: string): SplitJsonResult;
 export function repairJsonText(text: string): string;
-export function validate<T = unknown>(schema: JsonSchema, value: unknown): ValidationResult<T>;
-export function parseStructured<T = unknown>(text: string, schema: JsonSchema): ParseResult<T>;
-export function createContract<T = unknown>(schema: JsonSchema, options?: BriefOptions): OutputContract<T>;
+export function validate<T = unknown>(
+  schema: JsonSchema,
+  value: unknown,
+  options?: ValidationOptions
+): ValidationResult<T>;
+export function parseStructured<T = unknown>(
+  text: string,
+  schema: JsonSchema,
+  options?: ValidationOptions
+): ParseResult<T>;
+export function parseManyStructured<T = unknown>(
+  text: string,
+  schema: JsonSchema,
+  options?: ValidationOptions
+): ParseManyResult<T>;
+export function createContract<T = unknown>(schema: JsonSchema, options?: ContractOptions): OutputContract<T>;
+export function jsonSchemaFromZod(schema: unknown, options: ZodAdapterOptions): JsonSchema;
+export function briefFromZod(schema: unknown, options: ZodAdapterOptions): string;
+export function createContractFromZod<T = unknown>(schema: unknown, options: ZodAdapterOptions): OutputContract<T>;
+export function jsonSchemaFromValibot(schema: unknown, options: ValibotAdapterOptions): JsonSchema;
+export function briefFromValibot(schema: unknown, options: ValibotAdapterOptions): string;
+export function createContractFromValibot<T = unknown>(schema: unknown, options: ValibotAdapterOptions): OutputContract<T>;
 export function repairPrompt(schema: JsonSchema, issues: readonly ValidationIssue[]): string;
 export function toOpenAIResponseFormat(schema: JsonSchema, options?: ProviderFormatOptions): OpenAIResponseFormat;
 export function toOpenAITool(schema: JsonSchema, options?: ProviderFormatOptions): OpenAITool;

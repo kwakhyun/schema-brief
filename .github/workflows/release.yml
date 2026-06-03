@@ -36,6 +36,7 @@ jobs:
         run: |
           npm run check
           npm test
+          npm run size
           npm pack --dry-run
 
       - name: Publish to npm

@@ -1,4 +1,13 @@
 const DEFAULT_MAX_DEPTH = 8;
+const BUILT_IN_FORMATS = {
+  email: (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+  uri: isUrl,
+  url: isUrl,
+  uuid: (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value),
+  date: (value) => isValidDateOnly(value),
+  time: (value) => /^([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-][01]\d:[0-5]\d)?$/.test(value),
+  "date-time": (value) => !Number.isNaN(Date.parse(value))
+};
 
 /**
  * Compile a JSON Schema subset into a compact, model-readable contract.
@@ -126,11 +135,12 @@ export function repairJsonText(text) {
  *
  * @param {import("./index.d.ts").JsonSchema} schema
  * @param {unknown} value
+ * @param {import("./index.d.ts").ValidationOptions} [options]
  * @returns {import("./index.d.ts").ValidationResult}
  */
-export function validate(schema, value) {
+export function validate(schema, value, options = {}) {
   const issues = [];
-  visit(schema, value, "$", issues, 0);
+  visit(schema, value, "$", issues, 0, options);
   return issues.length === 0 ? { ok: true, value } : { ok: false, issues };
 }
 
@@ -139,12 +149,13 @@ export function validate(schema, value) {
  *
  * @param {string} text
  * @param {import("./index.d.ts").JsonSchema} schema
+ * @param {import("./index.d.ts").ValidationOptions} [options]
  * @returns {import("./index.d.ts").ParseResult}
  */
-export function parseStructured(text, schema) {
+export function parseStructured(text, schema, options = {}) {
   try {
     const value = extractJson(text);
-    const result = validate(schema, value);
+    const result = validate(schema, value, options);
     return result.ok ? { ok: true, value } : result;
   } catch (error) {
     return {
@@ -161,25 +172,137 @@ export function parseStructured(text, schema) {
 }
 
 /**
+ * Extract every JSON payload from text and validate each value against one schema.
+ *
+ * @param {string} text
+ * @param {import("./index.d.ts").JsonSchema} schema
+ * @param {import("./index.d.ts").ValidationOptions} [options]
+ * @returns {import("./index.d.ts").ParseManyResult}
+ */
+export function parseManyStructured(text, schema, options = {}) {
+  try {
+    const values = extractJsonValues(text);
+    if (values.length === 0) {
+      return {
+        ok: false,
+        results: [],
+        issues: [issue("$", "invalid_json", "No JSON object or array found in text")]
+      };
+    }
+
+    const results = values.map((value) => validate(schema, value, options));
+    if (results.every((result) => result.ok)) {
+      return { ok: true, values: results.map((result) => result.value), results };
+    }
+
+    return {
+      ok: false,
+      results,
+      issues: results.flatMap((result) => (result.ok ? [] : result.issues))
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      results: [],
+      issues: [
+        {
+          path: "$",
+          code: "invalid_json",
+          message: error instanceof Error ? error.message : "Invalid JSON"
+        }
+      ]
+    };
+  }
+}
+
+/**
  * Create a reusable structured-output contract around one schema.
  *
  * @param {import("./index.d.ts").JsonSchema} schema
- * @param {import("./index.d.ts").BriefOptions} [options]
+ * @param {import("./index.d.ts").ContractOptions} [options]
  * @returns {import("./index.d.ts").OutputContract}
  */
 export function createContract(schema, options = {}) {
   const prompt = brief(schema, options);
+  const validationOptions = options.validation ?? {};
   return {
     schema,
     prompt,
     instructions: prompt,
-    parse: (text) => parseStructured(text, schema),
-    validate: (value) => validate(schema, value),
+    parse: (text, parseOptions = validationOptions) => parseStructured(text, schema, parseOptions),
+    parseMany: (text, parseOptions = validationOptions) => parseManyStructured(text, schema, parseOptions),
+    validate: (value, validateOptions = validationOptions) => validate(schema, value, validateOptions),
     repairPrompt: (issues) => repairPrompt(schema, issues),
     toOpenAIResponseFormat: (providerOptions = {}) => toOpenAIResponseFormat(schema, providerOptions),
     toOpenAITool: (providerOptions = {}) => toOpenAITool(schema, providerOptions),
     toAnthropicTool: (providerOptions = {}) => toAnthropicTool(schema, providerOptions)
   };
+}
+
+/**
+ * Convert a Zod schema to JSON Schema using Zod's official z.toJSONSchema function.
+ *
+ * @param {unknown} schema
+ * @param {import("./index.d.ts").ZodAdapterOptions} options
+ * @returns {import("./index.d.ts").JsonSchema}
+ */
+export function jsonSchemaFromZod(schema, options) {
+  return convertSchemaLike(schema, options, "toJSONSchema", "jsonSchemaFromZod");
+}
+
+/**
+ * Compile a Zod schema into prompt text using Zod's official JSON Schema converter.
+ *
+ * @param {unknown} schema
+ * @param {import("./index.d.ts").ZodAdapterOptions} options
+ * @returns {string}
+ */
+export function briefFromZod(schema, options) {
+  return brief(jsonSchemaFromZod(schema, options), options);
+}
+
+/**
+ * Create a reusable contract from a Zod schema.
+ *
+ * @param {unknown} schema
+ * @param {import("./index.d.ts").ZodAdapterOptions & import("./index.d.ts").ContractOptions} options
+ * @returns {import("./index.d.ts").OutputContract}
+ */
+export function createContractFromZod(schema, options) {
+  return createContract(jsonSchemaFromZod(schema, options), options);
+}
+
+/**
+ * Convert a Valibot schema to JSON Schema using @valibot/to-json-schema.
+ *
+ * @param {unknown} schema
+ * @param {import("./index.d.ts").ValibotAdapterOptions} options
+ * @returns {import("./index.d.ts").JsonSchema}
+ */
+export function jsonSchemaFromValibot(schema, options) {
+  return convertSchemaLike(schema, options, "toJsonSchema", "jsonSchemaFromValibot");
+}
+
+/**
+ * Compile a Valibot schema into prompt text using @valibot/to-json-schema.
+ *
+ * @param {unknown} schema
+ * @param {import("./index.d.ts").ValibotAdapterOptions} options
+ * @returns {string}
+ */
+export function briefFromValibot(schema, options) {
+  return brief(jsonSchemaFromValibot(schema, options), options);
+}
+
+/**
+ * Create a reusable contract from a Valibot schema.
+ *
+ * @param {unknown} schema
+ * @param {import("./index.d.ts").ValibotAdapterOptions & import("./index.d.ts").ContractOptions} options
+ * @returns {import("./index.d.ts").OutputContract}
+ */
+export function createContractFromValibot(schema, options) {
+  return createContract(jsonSchemaFromValibot(schema, options), options);
 }
 
 /**
@@ -364,7 +487,7 @@ function collectDescriptions(schema, path = "$", notes = []) {
   return notes;
 }
 
-function visit(schema, value, path, issues, depth) {
+function visit(schema, value, path, issues, depth, options) {
   if (depth > DEFAULT_MAX_DEPTH * 4) {
     issues.push(issue(path, "max_depth", "Value is too deeply nested"));
     return;
@@ -380,7 +503,7 @@ function visit(schema, value, path, issues, depth) {
     return;
   }
 
-  if (!validateCompositions(schema, value, path, issues, depth)) {
+  if (!validateCompositions(schema, value, path, issues, depth, options)) {
     return;
   }
 
@@ -393,15 +516,15 @@ function visit(schema, value, path, issues, depth) {
   const type = Array.isArray(expected) ? inferType(value) : expected ?? inferType(value);
 
   if (type === "object" && value !== null && !Array.isArray(value) && typeof value === "object") {
-    validateObject(schema, value, path, issues, depth);
+    validateObject(schema, value, path, issues, depth, options);
   }
 
   if (type === "array" && Array.isArray(value)) {
-    validateArray(schema, value, path, issues, depth);
+    validateArray(schema, value, path, issues, depth, options);
   }
 
   if (type === "string" && typeof value === "string") {
-    validateString(schema, value, path, issues);
+    validateString(schema, value, path, issues, options);
   }
 
   if ((type === "number" || type === "integer") && typeof value === "number") {
@@ -409,7 +532,7 @@ function visit(schema, value, path, issues, depth) {
   }
 }
 
-function validateObject(schema, value, path, issues, depth) {
+function validateObject(schema, value, path, issues, depth, options) {
   const props = schema.properties ?? {};
   const required = Array.isArray(schema.required) ? schema.required : [];
   const keys = Object.keys(value);
@@ -430,19 +553,19 @@ function validateObject(schema, value, path, issues, depth) {
 
   for (const [key, childValue] of Object.entries(value)) {
     if (props[key]) {
-      visit(props[key], childValue, `${path}.${key}`, issues, depth + 1);
+      visit(props[key], childValue, `${path}.${key}`, issues, depth + 1, options);
       continue;
     }
 
     if (schema.additionalProperties === false) {
       issues.push(issue(`${path}.${key}`, "additional_property", "Additional property is not allowed"));
     } else if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
-      visit(schema.additionalProperties, childValue, `${path}.${key}`, issues, depth + 1);
+      visit(schema.additionalProperties, childValue, `${path}.${key}`, issues, depth + 1, options);
     }
   }
 }
 
-function validateArray(schema, value, path, issues, depth) {
+function validateArray(schema, value, path, issues, depth, options) {
   if (typeof schema.minItems === "number" && value.length < schema.minItems) {
     issues.push(issue(path, "min_items", `Expected at least ${schema.minItems} items`));
   }
@@ -466,17 +589,17 @@ function validateArray(schema, value, path, issues, depth) {
   if (Array.isArray(schema.items)) {
     schema.items.forEach((itemSchema, index) => {
       if (index < value.length) {
-        visit(itemSchema, value[index], `${path}[${index}]`, issues, depth + 1);
+        visit(itemSchema, value[index], `${path}[${index}]`, issues, depth + 1, options);
       }
     });
   } else if (schema.items) {
     value.forEach((itemValue, index) => {
-      visit(schema.items, itemValue, `${path}[${index}]`, issues, depth + 1);
+      visit(schema.items, itemValue, `${path}[${index}]`, issues, depth + 1, options);
     });
   }
 }
 
-function validateString(schema, value, path, issues) {
+function validateString(schema, value, path, issues, options) {
   if (typeof schema.minLength === "number" && value.length < schema.minLength) {
     issues.push(issue(path, "min_length", `Expected at least ${schema.minLength} characters`));
   }
@@ -490,6 +613,13 @@ function validateString(schema, value, path, issues) {
     if (!pattern) return;
     if (!pattern.test(value)) {
       issues.push(issue(path, "pattern", `Expected string to match /${schema.pattern}/`));
+    }
+  }
+
+  if (typeof schema.format === "string") {
+    const validator = resolveFormatValidator(schema.format, options);
+    if (validator && !validator(value)) {
+      issues.push(issue(path, "format", `Expected string to match format ${schema.format}`));
     }
   }
 }
@@ -527,15 +657,15 @@ function validateNumber(schema, value, path, issues) {
   }
 }
 
-function validateCompositions(schema, value, path, issues, depth) {
+function validateCompositions(schema, value, path, issues, depth, options) {
   if (Array.isArray(schema.allOf)) {
     for (const child of schema.allOf) {
-      visit(child, value, path, issues, depth + 1);
+      visit(child, value, path, issues, depth + 1, options);
     }
   }
 
   if (Array.isArray(schema.anyOf)) {
-    const matches = schema.anyOf.filter((child) => validate(child, value).ok);
+    const matches = schema.anyOf.filter((child) => validate(child, value, options).ok);
     if (matches.length === 0) {
       issues.push(issue(path, "any_of", "Expected value to match at least one schema"));
       return false;
@@ -543,7 +673,7 @@ function validateCompositions(schema, value, path, issues, depth) {
   }
 
   if (Array.isArray(schema.oneOf)) {
-    const matches = schema.oneOf.filter((child) => validate(child, value).ok);
+    const matches = schema.oneOf.filter((child) => validate(child, value, options).ok);
     if (matches.length !== 1) {
       issues.push(issue(path, "one_of", `Expected value to match exactly one schema, matched ${matches.length}`));
       return false;
@@ -551,6 +681,24 @@ function validateCompositions(schema, value, path, issues, depth) {
   }
 
   return true;
+}
+
+function convertSchemaLike(schema, options, converterKey, callerName) {
+  if (!options || typeof options !== "object") {
+    throw new TypeError(`${callerName} expected an options object`);
+  }
+
+  const converter = options[converterKey];
+  if (typeof converter !== "function") {
+    throw new TypeError(`${callerName} expected options.${converterKey} to be a function`);
+  }
+
+  const jsonSchema = converter(schema, options.converterOptions);
+  if (!isPlainObject(jsonSchema)) {
+    throw new TypeError(`${callerName} converter must return a JSON Schema object`);
+  }
+
+  return jsonSchema;
 }
 
 function normalizeType(schema) {
@@ -577,6 +725,51 @@ function inferType(value) {
   if (Array.isArray(value)) return "array";
   if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
   return typeof value;
+}
+
+function resolveFormatValidator(format, options) {
+  const setting = options.formats;
+  if (!setting) {
+    return null;
+  }
+
+  if (setting === true) {
+    return BUILT_IN_FORMATS[format] ?? null;
+  }
+
+  if (Array.isArray(setting)) {
+    return setting.includes(format) ? BUILT_IN_FORMATS[format] ?? null : null;
+  }
+
+  if (typeof setting === "object") {
+    const custom = setting[format];
+    if (typeof custom === "function") {
+      return custom;
+    }
+  }
+
+  return null;
+}
+
+function isUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isValidDateOnly(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(value);
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function issue(path, code, message) {

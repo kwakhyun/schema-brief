@@ -1,6 +1,6 @@
 {
   "name": "schema-brief",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Compact JSON Schema prompts and validate structured LLM outputs with zero dependencies.",
   "type": "module",
   "main": "./src/index.js",
@@ -13,6 +13,7 @@
   },
   "files": [
     "src",
+    "scripts/size.mjs",
     "examples",
     "CHANGELOG.md",
     "README.md",
@@ -21,7 +22,8 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.js",
-    "prepublishOnly": "npm test && npm run check"
+    "size": "node scripts/size.mjs",
+    "prepublishOnly": "npm test && npm run check && npm run size"
   },
   "keywords": [
     "ai",

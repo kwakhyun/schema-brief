@@ -38,5 +38,8 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Check browser size budget
+        run: npm run size
+
       - name: Verify package contents
         run: npm pack --dry-run

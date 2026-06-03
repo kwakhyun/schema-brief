@@ -3,8 +3,13 @@ import test from "node:test";
 import {
   brief,
   createContract,
+  createContractFromValibot,
+  createContractFromZod,
   extractJson,
   extractJsonValues,
+  jsonSchemaFromValibot,
+  jsonSchemaFromZod,
+  parseManyStructured,
   parseStructured,
   repairJsonText,
   repairPrompt,
@@ -173,6 +178,49 @@ test("validate reports invalid regex patterns instead of throwing", () => {
   assert.equal(result.issues[0].code, "invalid_pattern");
 });
 
+test("validate can opt into built-in format validators", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      email: { type: "string", format: "email" },
+      website: { type: "string", format: "url" },
+      id: { type: "string", format: "uuid" }
+    }
+  };
+
+  assert.equal(
+    validate(
+      schema,
+      {
+        email: "user@example.com",
+        website: "https://example.com",
+        id: "123e4567-e89b-12d3-a456-426614174000"
+      },
+      { formats: true }
+    ).ok,
+    true
+  );
+
+  const result = validate(schema, { email: "nope", website: "ftp://example.com", id: "x" }, { formats: true });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(
+    result.issues.map((item) => item.path).sort(),
+    ["$.email", "$.id", "$.website"]
+  );
+});
+
+test("validate can use custom format validators", () => {
+  const result = validate(
+    { type: "string", format: "slug" },
+    "Not a slug",
+    { formats: { slug: (value) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) } }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].code, "format");
+});
+
 test("validate supports tuple items and uniqueItems", () => {
   const schema = {
     type: "array",
@@ -268,15 +316,48 @@ test("parseStructured extracts and validates model output", () => {
   });
 });
 
+test("parseManyStructured validates every extracted JSON payload", () => {
+  const result = parseManyStructured("{\"title\":\"A good task\",\"priority\":\"low\",\"tags\":[\"ops\"]}\n{\"title\":\"No\",\"priority\":\"low\",\"tags\":[\"ops\"]}", taskSchema);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].ok, true);
+  assert.equal(result.results[1].ok, false);
+  assert.equal(result.issues[0].path, "$.title");
+});
+
 test("createContract bundles prompt, parse, validate, repair, and provider helpers", () => {
   const contract = createContract(taskSchema);
   const parsed = contract.parse("{\"title\":\"Review PR\",\"priority\":\"high\",\"tags\":[\"code\"]}");
 
   assert.match(contract.prompt, /TaskSummary/);
   assert.equal(parsed.ok, true);
+  assert.equal(contract.parseMany("{\"title\":\"Review PR\",\"priority\":\"high\",\"tags\":[\"code\"]}").ok, true);
   assert.equal(contract.validate(parsed.value).ok, true);
   assert.match(contract.repairPrompt([{ path: "$.priority", code: "enum", message: "Expected priority" }]), /priority/);
   assert.equal(contract.toOpenAIResponseFormat().json_schema.name, "TaskSummary");
+});
+
+test("Zod and Valibot adapters use injected JSON Schema converters", () => {
+  const zodSchema = { kind: "zod" };
+  const valibotSchema = { kind: "valibot" };
+  const zodConverter = (schema) => ({
+    title: schema.kind,
+    type: "object",
+    required: ["name"],
+    properties: { name: { type: "string" } }
+  });
+  const valibotConverter = (schema) => ({
+    title: schema.kind,
+    type: "object",
+    required: ["ok"],
+    properties: { ok: { type: "boolean" } }
+  });
+
+  assert.equal(jsonSchemaFromZod(zodSchema, { toJSONSchema: zodConverter }).title, "zod");
+  assert.match(createContractFromZod(zodSchema, { toJSONSchema: zodConverter }).prompt, /zod/);
+  assert.equal(jsonSchemaFromValibot(valibotSchema, { toJsonSchema: valibotConverter }).title, "valibot");
+  assert.equal(createContractFromValibot(valibotSchema, { toJsonSchema: valibotConverter }).validate({ ok: true }).ok, true);
 });
 
 test("provider helpers produce OpenAI and Anthropic schema shapes", () => {
